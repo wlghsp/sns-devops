@@ -1,0 +1,109 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: sns-secret
+  namespace: sns
+type: Opaque
+stringData:
+  db-username: snsuser
+  db-password: snspassword
+  redis-password: snspassword
+  rustfs-access-key: rustfsadmin
+  rustfs-secret-key: rustfsadmin
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sns-app
+  namespace: sns
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: sns-app
+  template:
+    metadata:
+      labels:
+        app: sns-app
+    spec:
+      containers:
+        - name: sns-app
+          image: springboot-sns:latest
+          imagePullPolicy: Never
+          ports:
+            - containerPort: 8080
+          env:
+            - name: SPRING_DATASOURCE_URL
+              value: jdbc:postgresql://postgres.postgres.svc.cluster.local:5432/snsdb
+            - name: SPRING_DATASOURCE_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: sns-secret
+                  key: db-username
+            - name: SPRING_DATASOURCE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: sns-secret
+                  key: db-password
+            - name: SPRING_DATA_REDIS_HOST
+              value: redis.redis.svc.cluster.local
+            - name: SPRING_DATA_REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: sns-secret
+                  key: redis-password
+            - name: RUSTFS_ENDPOINT
+              value: http://rustfs.rustfs.svc.cluster.local:9000
+            - name: RUSTFS_ACCESSKEY
+              valueFrom:
+                secretKeyRef:
+                  name: sns-secret
+                  key: rustfs-access-key
+            - name: RUSTFS_SECRETKEY
+              valueFrom:
+                secretKeyRef:
+                  name: sns-secret
+                  key: rustfs-secret-key
+            - name: NODE_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.hostIP
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: http://$(NODE_IP):4318
+            - name: JAVA_TOOL_OPTIONS
+              value: "-XX:MaxRAMPercentage=50"
+          readinessProbe:
+            httpGet:
+              path: /actuator/health
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /actuator/health
+              port: 8080
+            initialDelaySeconds: 60
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 200m
+              memory: 384Mi
+            limits:
+              cpu: "1"
+              memory: 640Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: sns-app
+  namespace: sns
+  labels:
+    app: sns-app
+spec:
+  type: ClusterIP
+  selector:
+    app: sns-app
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
