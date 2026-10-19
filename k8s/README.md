@@ -209,7 +209,8 @@ helm repo update
 
 helm install prometheus prometheus-community/kube-prometheus-stack --version 88.3.0 \
   -n monitoring --create-namespace \
-  -f k8s/monitoring/kube-prometheus-values.yaml
+  -f k8s/monitoring/kube-prometheus-values.yaml \
+  -f k8s/monitoring/kube-prometheus-values-full.yaml
 
 kubectl apply -f k8s/monitoring/servicemonitor.yaml
 kubectl apply -f k8s/gateway/monitoring.yaml
