@@ -1,0 +1,26 @@
+global:
+  domain: argocd.localhost
+
+configs:
+  cm:
+    timeout.reconciliation: 60s
+  params:
+    server.insecure: "true"
+
+server:
+  httproute:
+    enabled: true
+    parentRefs:
+      - name: traefik-gateway
+        namespace: traefik
+    hostnames:
+      - argocd.localhost
+
+dex:
+  enabled: false     # SSO 로그인을 붙여 주는 dex-server. 실습은 admin 계정만 써서 끕니다 (기본값: true)
+
+notifications:
+  enabled: false     # 동기화 결과를 슬랙, 메일로 보내는 컨트롤러. 실습에서 안 써서 끕니다 (기본값: true)
+
+applicationSet:
+  replicas: 0        # Application 을 자동 생성해 주는 컨트롤러. 차트에 enabled 가 없어 파드 수로 끕니다 (기본값: 1)

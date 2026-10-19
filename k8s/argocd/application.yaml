@@ -1,0 +1,27 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: sns-app
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+
+  source:
+    repoURL: https://github.com/wlghsp/sns-devops.git
+    targetRevision: HEAD
+    path: k8s/sns-app
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: sns
+
+  syncPolicy:
+    automated:
+      enabled: true      # 자동 동기화 사용 여부 (기본값: true)
+      prune: true        # Git에서 삭제된 리소스 → 클러스터에서도 삭제 (기본값: false)
+      selfHeal: true     # 클러스터 수동 변경 → Git 상태로 자동 복구 (기본값: false)
+      allowEmpty: false  # 리소스가 0개인 상태로의 sync 허용 여부 (기본값: false)
+    syncOptions:
+      - CreateNamespace=true
