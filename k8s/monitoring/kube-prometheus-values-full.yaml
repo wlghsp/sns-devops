@@ -1,0 +1,29 @@
+prometheus:
+  prometheusSpec:
+    retention: 7d
+    resources:
+      requests:
+        cpu: 200m
+        memory: 512Mi
+      limits:
+        memory: 2Gi
+
+grafana:
+  defaultDashboardsEnabled: true
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 512Mi
+
+nodeExporter:
+  enabled: true
+
+defaultRules:
+  rules:
+    nodeExporterAlerting: true
+    nodeExporterRecording: true
+    node: true
+    network: true
+    kubePrometheusNodeRecording: true

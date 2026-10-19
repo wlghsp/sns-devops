@@ -1,0 +1,18 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: sns-app
+  namespace: monitoring
+  labels:
+    release: prometheus
+spec:
+  namespaceSelector:
+    matchNames:
+      - sns
+  selector:
+    matchLabels:
+      app: sns-app
+  endpoints:
+    - port: http
+      path: /actuator/prometheus
+      interval: 30s
