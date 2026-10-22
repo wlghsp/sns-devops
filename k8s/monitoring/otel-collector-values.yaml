@@ -22,12 +22,12 @@ resources:
     cpu: 500m
     memory: 512Mi
 
-# 06강은 노드 로그 파일만 읽습니다. 07강에서 OTLP 트레이스 수신을 켭니다.
+# 로그는 노드 파일에서 읽고, 트레이스는 OTLP로 받습니다.
 ports:
   otlp:
-    enabled: false
+    enabled: true
   otlp-http:
-    enabled: false
+    enabled: true
   jaeger-compact:
     enabled: false
   jaeger-thrift:
@@ -42,7 +42,12 @@ config:
     jaeger: null
     prometheus: null
     zipkin: null
-    otlp: null
+    otlp:
+      protocols:
+        grpc:
+          endpoint: 0.0.0.0:4317
+        http:
+          endpoint: 0.0.0.0:4318
     # 차트 0.169.0의 logsCollection 프리셋 키에 맞춥니다. 렌더링 시 file_log로 변환됩니다.
     filelog:
       # CRI 로그 봉투를 벗긴 뒤 sns-app의 JSON 본문을 읽습니다.
@@ -89,6 +94,11 @@ config:
     otlphttp/loki:
       endpoint: http://loki.monitoring.svc.cluster.local:3100/otlp
 
+    otlp/tempo:
+      endpoint: tempo.monitoring.svc.cluster.local:4317
+      tls:
+        insecure: true
+
   service:
     pipelines:
       logs:
@@ -96,4 +106,7 @@ config:
         processors: [memory_limiter, k8s_attributes, batch]
         exporters: [otlphttp/loki]
       metrics: null
-      traces: null
+      traces:
+        receivers: [otlp]
+        processors: [memory_limiter, k8s_attributes, batch]
+        exporters: [otlp/tempo]
