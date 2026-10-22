@@ -64,12 +64,6 @@ spec:
                 secretKeyRef:
                   name: sns-secret
                   key: rustfs-secret-key
-            - name: NODE_IP
-              valueFrom:
-                fieldRef:
-                  fieldPath: status.hostIP
-            - name: OTEL_EXPORTER_OTLP_ENDPOINT
-              value: http://$(NODE_IP):4318
             - name: JAVA_TOOL_OPTIONS
               value: "-XX:MaxRAMPercentage=50"
           readinessProbe:
