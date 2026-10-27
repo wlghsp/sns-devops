@@ -1,0 +1,259 @@
+#!/bin/sh
+# macOS와 Git Bash에서는 실행 가능한 Python 3.8 이상을 찾아 실행합니다.
+# PowerShell에서는 py -3 skills/obsctl 또는 python skills/obsctl을 사용하세요.
+''''true
+export PYTHONUTF8=1
+export PYTHONIOENCODING=utf-8:backslashreplace
+for interpreter in python3 python; do
+    if [ "$("$interpreter" -c 'import sys; print("obsctl-ready" if sys.version_info >= (3, 8) else "")' 2>/dev/null)" = obsctl-ready ]; then
+        exec "$interpreter" "$0" "$@"
+    fi
+done
+if [ "$(py -3 -c 'import sys; print("obsctl-ready" if sys.version_info >= (3, 8) else "")' 2>/dev/null)" = obsctl-ready ]; then
+    exec py -3 "$0" "$@"
+fi
+echo "obsctl: Python 3.8+ is required. Install Python and add it to PATH." >&2
+exit 1
+#'''
+
+import json
+import os
+import re
+import sys
+import time
+
+if sys.version_info < (3, 8):
+    sys.exit("obsctl: Python 3.8+ is required.")
+for stream in (sys.stdout, sys.stderr):
+    if hasattr(stream, "reconfigure"):
+        stream.reconfigure(encoding="utf-8", errors="backslashreplace")
+
+import urllib.error
+import urllib.parse
+import urllib.request
+
+USAGE = """obsctl: 관측 스택(Prometheus, Loki, Tempo)을 HTTP 로 조회하는 CLI.
+
+Codex CLI 같은 에이전트가 장애 원인을 찾을 때 쓰라고 만든 도구다.
+Python 3.8 이상이 필요하며, 추가 패키지나 가상환경은 필요 없습니다.
+macOS / Git Bash: ./skills/obsctl --help
+Windows PowerShell: py -3 skills/obsctl --help (또는 python skills/obsctl --help)
+run.sh는 Git Bash 또는 WSL에서 실행합니다.
+
+사용법:
+  obsctl metrics '<promql>'          Prometheus 즉시 질의
+  obsctl logs '<logql>' [분]         Loki 범위 질의 (기본 15분)
+  obsctl traces '<traceql>' [분]     Tempo 범위 질의 (기본 15분)
+  obsctl traces <traceId>            트레이스 하나를 span 트리로
+  obsctl analyze <service> [분]      위 셋을 한 번에 (장애 분석 시작점)
+
+환경변수로 주소를 바꿀 수 있다.
+  PROM_URL   기본 http://prometheus.localhost
+  LOKI_URL   기본 http://loki.localhost
+  TEMPO_URL  기본 http://tempo.localhost
+"""
+
+PROM = os.environ.get("PROM_URL", "http://prometheus.localhost")
+LOKI = os.environ.get("LOKI_URL", "http://loki.localhost")
+TEMPO = os.environ.get("TEMPO_URL", "http://tempo.localhost")
+TIMEOUT = 15
+TRACE_ID = re.compile(r"[0-9a-fA-F]{16,32}\Z")
+
+
+def get(url, params=None):
+    full = f"{url}?{urllib.parse.urlencode(params)}" if params else url
+    try:
+        with urllib.request.urlopen(full, timeout=TIMEOUT) as r:
+            return json.load(r)
+    except urllib.error.HTTPError as e:
+        die(f"{e.code} {e.reason}\n  {full}")
+    except urllib.error.URLError as e:
+        die(
+            f"접속 실패: {e.reason}\n  {full}\n  HTTPRoute 와 hosts 파일을 확인하세요."
+        )
+
+
+def die(msg):
+    print(f"obsctl: {msg}", file=sys.stderr)
+    sys.exit(1)
+
+
+def minutes_arg(argv, idx, default=15):
+    try:
+        minutes = int(argv[idx]) if len(argv) > idx else default
+    except ValueError:
+        die("조회 시간은 분 단위 정수여야 합니다.")
+    if minutes < 1:
+        die("조회 시간은 1분 이상이어야 합니다.")
+    return minutes
+
+
+def printable(value):
+    return "".join(c if c.isprintable() or c == "\t" else " " for c in str(value))
+
+
+# ---------------------------------------------------------------- metrics
+def cmd_metrics(argv):
+    if not argv:
+        die("PromQL 이 필요합니다.")
+    d = get(f"{PROM}/api/v1/query", {"query": argv[0]})
+    result = d.get("data", {}).get("result", [])
+    if not result:
+        print("(결과 없음)")
+        return
+    for s in result:
+        labels = ", ".join(
+            f"{printable(k)}={printable(v)}"
+            for k, v in s["metric"].items()
+            if k != "__name__"
+        )
+        print(f"  {printable(s['value'][1]):>12}  {labels}")
+
+
+# ------------------------------------------------------------------- logs
+def cmd_logs(argv):
+    if not argv:
+        die("LogQL 이 필요합니다.")
+    mins = minutes_arg(argv, 1)
+    now = int(time.time())
+    d = get(
+        f"{LOKI}/loki/api/v1/query_range",
+        {
+            "query": argv[0],
+            "start": (now - mins * 60) * 10**9,
+            "end": now * 10**9,
+            "limit": 50,
+            "direction": "backward",
+        },
+    )
+    streams = d.get("data", {}).get("result", [])
+    if not streams:
+        print("(로그 없음)")
+        return
+    lines = []
+    for s in streams:
+        for ts, line in s["values"]:
+            lines.append((int(ts), line))
+    for ts, line in sorted(lines, reverse=True)[:50]:
+        stamp = time.strftime("%H:%M:%S", time.localtime(ts / 10**9))
+        print(f"  {stamp}  {printable(line.strip())[:200]}")
+
+
+# ----------------------------------------------------------------- traces
+def cmd_traces(argv):
+    """인자가 traceId 면 span 트리를, TraceQL 이면 검색 결과를 보여준다."""
+    if not argv:
+        die("TraceQL 또는 traceId 가 필요합니다.")
+    if TRACE_ID.match(argv[0]):
+        show_trace(argv[0])
+    else:
+        search_traces(argv)
+
+
+def search_traces(argv):
+    mins = minutes_arg(argv, 1)
+    now = int(time.time())
+    d = get(
+        f"{TEMPO}/api/search",
+        {
+            "q": argv[0],
+            "start": now - mins * 60,
+            "end": now,
+            "limit": 20,
+        },
+    )
+    traces = d.get("traces", []) or []
+    if not traces:
+        print("(트레이스 없음)")
+        return
+    print(f"  {'traceID':34s} {'duration':>9s}  root")
+    for t in sorted(traces, key=lambda x: x.get("durationMs", 0), reverse=True):
+        print(
+            f"  {printable(t.get('traceID', '')):34s} {t.get('durationMs', 0):>7}ms  "
+            f"{printable(t.get('rootTraceName', ''))}"
+        )
+
+
+def show_trace(trace_id):
+    # cmd_traces 가 16진수만 통과시키므로 URL 에 그대로 넣어도 된다.
+    d = get(f"{TEMPO}/api/traces/{trace_id}")
+    for batch in d.get("batches", []):
+        svc = "?"
+        for attr in batch.get("resource", {}).get("attributes", []):
+            if attr.get("key") == "service.name":
+                svc = attr["value"].get("stringValue", "?")
+        for scope in batch.get("scopeSpans", []):
+            for span in scope.get("spans", []):
+                dur = (
+                    int(span.get("endTimeUnixNano", 0))
+                    - int(span.get("startTimeUnixNano", 0))
+                ) // 10**6
+                status = span.get("status", {}).get("code", "")
+                mark = " ERROR" if status == "STATUS_CODE_ERROR" else ""
+                print(
+                    f"  {dur:>6}ms  {printable(svc)}/{printable(span.get('name', ''))}{mark}"
+                )
+                for attr in span.get("attributes", []):
+                    key = attr.get("key", "")
+                    if key.startswith(("user.", "timeout.", "upstream.", "http.")):
+                        val = next(iter(attr.get("value", {}).values()), "")
+                        print(f"           {printable(key)}={printable(val)}")
+
+
+# -------------------------------------------------------------- analyze
+def cmd_analyze(argv):
+    if not argv:
+        die("서비스 이름이 필요합니다.")
+    svc = argv[0]
+    svc_query = json.dumps(svc)
+    mins = minutes_arg(argv, 1)
+
+    print(f"# 장애 분석: {svc} (최근 {mins}분)\n")
+
+    print("## 1. 에러율 (메트릭)")
+    cmd_metrics(
+        [
+            f'sum(rate(http_server_requests_seconds_count{{job={svc_query},status=~"5.."}}[{mins}m]))'
+            f" / sum(rate(http_server_requests_seconds_count{{job={svc_query}}}[{mins}m]))"
+        ]
+    )
+
+    print("\n## 2. 엔드포인트별 에러 수 (메트릭)")
+    cmd_metrics(
+        [
+            f"sum by (uri,status) (increase("
+            f'http_server_requests_seconds_count{{job={svc_query},status=~"5.."}}[{mins}m]))'
+        ]
+    )
+
+    print("\n## 3. 트레이스")
+    cmd_traces([f"{{ resource.service.name = {svc_query} }}", str(mins)])
+
+    print("\n## 4. 최근 에러 로그 (로그)")
+    cmd_logs([f'{{service_name={svc_query}}} | detected_level="error"', str(mins)])
+
+    print(
+        "\n다음 단계: 위에서 가장 느린 traceID 를 골라 obsctl traces <traceId> 로 구간을 확인하세요."
+    )
+
+
+COMMANDS = {
+    "metrics": cmd_metrics,
+    "logs": cmd_logs,
+    "traces": cmd_traces,
+    "analyze": cmd_analyze,
+}
+
+
+def main():
+    if len(sys.argv) < 2 or sys.argv[1] in ("-h", "--help"):
+        print(USAGE)
+        return
+    cmd = sys.argv[1]
+    if cmd not in COMMANDS:
+        die(f"알 수 없는 명령: {cmd}\n{USAGE}")
+    COMMANDS[cmd](sys.argv[2:])
+
+
+if __name__ == "__main__":
+    main()
